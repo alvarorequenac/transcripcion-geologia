@@ -150,8 +150,11 @@ export class WhisperClient {
 
 /* ---------- Transcripción en la nube (Whisper Large v3 por API) ---------- */
 export const CLOUD = {
-  groq: { label: 'Groq · Whisper Large v3 (gratis)', url: 'https://api.groq.com/openai/v1/audio/transcriptions', model: 'whisper-large-v3', keyUrl: 'https://console.groq.com/keys' },
-  openai: { label: 'OpenAI · Whisper', url: 'https://api.openai.com/v1/audio/transcriptions', model: 'whisper-1', keyUrl: 'https://platform.openai.com/api-keys' },
+  groq: {
+    label: 'Groq · Whisper Large v3',
+    url: 'https://estrato-transcribe.your-subdomain.workers.dev/transcribe',
+    model: 'whisper-large-v3',
+  },
 };
 
 export function encodeWav(f32, rate = 16000) {
@@ -165,14 +168,22 @@ export function encodeWav(f32, rate = 16000) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-// Misma interfaz que WhisperClient (load/run), pero envía cada tramo de voz a la API.
+// Misma interfaz que WhisperClient (load/run), pero envía cada tramo de voz al proxy seguro.
 export class CloudClient {
-  constructor({ provider, key, terms, dialect }) {
+  constructor({ endpoint, terms, dialect }) {
     this.dialect = dialect === 'es' ? 'es' : 'cl';
-    this.cfg = CLOUD[provider] || CLOUD.groq; this.key = (key || '').trim();
+    this.cfg = CLOUD.groq;
+    this.endpoint = (endpoint || this.cfg.url).trim();
     this.terms = (terms || []); this.tail = ''; this.last = 0; this.onNote = null;
   }
-  async load(_k, _cap, _p, onNote) { this.onNote = onNote; if (!this.key) throw new Error('Falta la clave de API.'); }
+  async load(_k, _cap, _p, onNote) {
+    this.onNote = onNote;
+    let url;
+    try { url = new URL(this.endpoint); } catch { throw new Error('Configura una URL válida para el backend seguro de transcripción.'); }
+    if (url.protocol !== 'https:' || url.hostname === 'estrato-transcribe.your-subdomain.workers.dev') {
+      throw new Error('Configura la URL HTTPS de tu backend de Cloudflare Workers antes de transcribir en la nube.');
+    }
+  }
   _prompt() {
     let list = '';
     for (const t of this.terms) { if ((list + t).length > 250) break; list += (list ? ', ' : '') + t; }
@@ -189,7 +200,7 @@ export class CloudClient {
       fd.append('response_format', 'verbose_json'); fd.append('temperature', '0'); fd.append('prompt', this._prompt());
       let res;
       const ac = new AbortController(); const to = setTimeout(() => ac.abort(), 120000);
-      try { this.last = Date.now(); res = await fetch(this.cfg.url, { method: 'POST', headers: { Authorization: 'Bearer ' + this.key }, body: fd, signal: ac.signal }); }
+      try { this.last = Date.now(); res = await fetch(this.endpoint, { method: 'POST', body: fd, signal: ac.signal }); }
       catch (e) { clearTimeout(to); if (attempt >= 3) throw new Error('No hay conexión con el servicio de transcripción. Revisa tu internet y pulsa «Continuar».'); await sleep(2500 * (attempt + 1)); continue; }
       clearTimeout(to);
       if (res.ok) {
@@ -205,7 +216,7 @@ export class CloudClient {
         if (text.trim()) this.tail = text.trim().slice(-180);
         return { text, chunks };
       }
-      if (res.status === 401 || res.status === 403) throw new Error('El proveedor rechazó la clave de API (' + res.status + '). Revísala y vuelve a intentar.');
+      if (res.status === 401 || res.status === 403) throw new Error('El backend rechazó la solicitud. Revisa la configuración de Cloudflare Workers.');
       if (res.status === 429) {
         const ra = parseFloat(res.headers.get('retry-after')) || 20;
         if (ra > 120) throw new Error(`Se alcanzó el límite gratuito de ${this.cfg.label}. Vuelve a pulsar «Continuar» en ${Math.ceil(ra / 60)} min; lo ya transcrito está guardado.`);
