@@ -1,0 +1,17 @@
+{
+  "name": "Estrato · Grabadora de clases",
+  "short_name": "Estrato",
+  "description": "Graba clases de Geología, transcríbelas en español y expórtalas a Word o PDF con las diapositivas.",
+  "lang": "es-CL",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#E9EEEC",
+  "theme_color": "#12805F",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
