@@ -1,0 +1,2 @@
+# transcripcion-geologia
+toi curadisimo
