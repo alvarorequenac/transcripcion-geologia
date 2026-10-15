@@ -1,8 +1,8 @@
 import { db, get, put, all, byIndex, range, saveRec, deleteRecording, deleteAttachment, uid, cleanOrphans } from './db.js';
 import { Recorder, PROFILES, recoverInterrupted, getAudioBlob, extFor, PCM_RATE } from './recorder.js';
 import { PCMReader, analyze, envFromFrames, storePCM } from './vad.js';
-import { WhisperClient, MODELS, capabilities, recommend, transcribe, applyGlossaryToRec, revertGlossary } from './transcriber.js';
-import { DEFAULT_TERMS, parseTerms } from './glossary.js';
+import { WhisperClient, CloudClient, CLOUD, MODELS, capabilities, recommend, transcribe, applyGlossaryToRec, revertGlossary } from './transcriber.js';
+import { DEFAULT_TERMS, CHILE_TERMS, parseTerms } from './glossary.js';
 import { addAttachment } from './attachments.js';
 import { findAll, highlight, snippet, esc, norm } from './search.js';
 import { fmtTime, fmtDate, buildItems, exportDocx, exportPDF, exportTxt, download, safeName } from './export.js';
@@ -37,6 +37,7 @@ const askText = (label, value) => dialog(
   `<form method="dialog" class="stack"><label class="f" for="dtx">${esc(label)}</label><input id="dtx" type="text" value="${esc(value || '')}"><div class="row" style="justify-content:flex-end"><button class="btn" type="button" data-v="">Cancelar</button><button class="btn primary" type="submit" value="ok">Guardar</button></div></form>`,
   { onMount: (dlg, done) => { const f = $('form', dlg); f.onsubmit = (e) => { e.preventDefault(); done($('#dtx', dlg).value.trim() || value); }; $('#dtx', dlg).focus(); } });
 
+const DEFAULT_SET = new Set(parseTerms(DEFAULT_TERMS).map(t => t.toLowerCase()));
 const mb = (b) => (b / 1048576).toFixed(b > 1e8 ? 0 : 1);
 const durText = (s) => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : `${m} min`; };
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
@@ -118,14 +119,6 @@ async function viewRecord() {
 
   view.innerHTML = `
   <h1>Grabar una clase</h1>
-  <section class="panel" aria-label="Cómo grabar y descargar la transcripción">
-    <b>Del audio al documento</b>
-    <ol class="small muted" style="margin:8px 0 0;padding-left:22px">
-      <li>Pulsa el botón rojo para grabar; al terminar, púlsalo otra vez y elige «Detener y guardar».</li>
-      <li>En la clase guardada, pulsa «Transcribir en español». La transcripción se guarda automáticamente en este dispositivo.</li>
-      <li>Cuando termine, pulsa «Descargar Word o PDF» y elige el formato.</li>
-    </ol>
-  </section>
   ${hasMic ? '' : '<div class="alert bad">Este navegador no permite grabar audio. Prueba con Chrome, Edge, Firefox o Safari actualizados, abriendo la página con https.</div>'}
   <div id="alerts"></div>
   <section class="panel stack" aria-label="Grabadora">
@@ -755,13 +748,27 @@ async function viewDetail(id, autoTranscribe) {
     const pick = tr.model && MODELS[tr.model] && tr.state !== 'done' ? tr.model : rec_;
     const canTurbo = cap.webgpu && cap.f16;
     const gl = lsGet('estrato.glossary', DEFAULT_TERMS);
+    const cl = Object.assign({ engine: (cap.mobile || !canTurbo) ? 'cloud' : 'local', provider: 'groq', key: '', dialect: 'cl' }, lsGet('estrato.cloud', {}));
     const optsHtml = Object.entries(MODELS).map(([k, m]) => {
       const dis = k === 'turbo' && !canTurbo;
       return `<label class="opt ${dis ? 'disabled' : ''}"><input type="radio" name="model" value="${k}" ${pick === k ? 'checked' : ''} ${dis ? 'disabled' : ''}><span><b>${m.label}${k === rec_ ? ' (recomendado)' : ''}</b><span class="small muted">${m.sub}${dis ? '. Requiere WebGPU con soporte de 16 bits (Chrome o Edge recientes en computador).' : ''}</span></span></label>`;
     }).join('');
     const inner = `
+      <div class="stack" role="radiogroup" aria-label="Dónde transcribir">
+        <label class="opt"><input type="radio" name="eng" value="cloud" ${cl.engine === 'cloud' ? 'checked' : ''}><span><b>En la nube · Whisper Large v3 (recomendado)</b><span class="small muted">La opción más precisa y funciona rápido en cualquier celular. Necesita internet y una clave gratuita. El audio de la clase se envía al proveedor solo para transcribirlo.</span></span></label>
+        <label class="opt"><input type="radio" name="eng" value="local" ${cl.engine === 'local' ? 'checked' : ''}><span><b>En este dispositivo</b><span class="small muted">Privado y sin internet, pero menos preciso en celulares.</span></span></label>
+      </div>
+      <div id="cloudbox" class="stack" style="margin-top:12px" ${cl.engine === 'cloud' ? '' : 'hidden'}>
+        <div><label class="f" for="prov">Proveedor</label><select id="prov">${Object.entries(CLOUD).map(([k, c]) => `<option value="${k}" ${cl.provider === k ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>
+        <div><label class="f" for="dial">Variante del español</label><select id="dial"><option value="cl" ${cl.dialect !== 'es' ? 'selected' : ''}>Español de Chile (recomendado)</option><option value="es" ${cl.dialect === 'es' ? 'selected' : ''}>Español general</option></select>
+          <p class="small muted" style="margin:6px 0 0">En la variante chilena se reconocen mejor las expresiones del habla chilena («po», «cachai», «al tiro») y los nombres de la geología de Chile.</p></div>
+        <div><label class="f" for="akey">Clave de API</label><input id="akey" type="password" autocomplete="off" spellcheck="false" value="${esc(cl.key)}" placeholder="Pega aquí tu clave">
+          <p class="small muted" style="margin:6px 0 0">Gratis en <a id="keylink" href="${CLOUD[cl.provider].keyUrl}" target="_blank" rel="noopener">${CLOUD[cl.provider].keyUrl.replace('https://', '')}</a> (crea una cuenta y pulsa «Create API key»). La clave queda guardada solo en este dispositivo.</p></div>
+      </div>
+      <div id="localbox" style="margin-top:12px" ${cl.engine === 'local' ? '' : 'hidden'}>
       ${!cap.webgpu ? '<div class="alert">Este navegador no tiene WebGPU: transcribir funciona, pero será bastante más lento. Chrome o Edge recientes, en computador o Android, son la mejor opción.</div>' : ''}
       <div class="stack" id="mopts" role="radiogroup" aria-label="Modelo de transcripción">${optsHtml}</div>
+      <p class="small muted" style="margin-top:10px">El modelo se descarga una sola vez y queda guardado para usarlo sin conexión.</p></div>
       <details style="margin-top:12px"><summary class="small"><b>Glosario de términos geológicos</b></summary>
         <p class="small muted" style="margin-top:8px">Whisper suele deformar palabras técnicas. Los términos de esta lista (separados por comas) se usan para corregir las que se parezcan mucho. Agrega los de tu curso.</p>
         <textarea id="gl" aria-label="Glosario">${esc(gl)}</textarea>
@@ -771,7 +778,7 @@ async function viewDetail(id, autoTranscribe) {
         <button class="btn primary" id="go">${tr.state === 'partial' && tr.done ? 'Continuar transcripción' : has ? 'Volver a transcribir' : 'Transcribir en español'}</button>
         ${has ? '<button class="btn sm" id="applygl">Aplicar glosario al texto actual</button><button class="btn sm ghost" id="revgl">Deshacer correcciones del glosario</button>' : ''}
       </div>
-      <p class="small muted" style="margin-top:10px">La transcripción ocurre en tu dispositivo: el audio no se sube a ningún servidor. El modelo se descarga una sola vez y queda guardado para usarlo sin conexión. Mantén esta pestaña abierta mientras trabaja.</p>
+      <p class="small muted" style="margin-top:10px">Mantén esta pestaña abierta y la pantalla encendida mientras se transcribe.</p>
       <div id="run" hidden class="stack" style="margin-top:12px">
         <div id="runtxt" class="small"></div>
         <div class="progress"><div id="runbar"></div></div>
@@ -781,14 +788,10 @@ async function viewDetail(id, autoTranscribe) {
     box.innerHTML = has && tr.state === 'done'
       ? `<details class="panel"><summary>Volver a transcribir o ajustar el glosario</summary>${inner}</details>`
       : `<section class="panel"><h2>${has ? 'Transcripción incompleta' : 'Transcribir esta clase'}</h2>${inner}</section>`;
-    if (has && tr.state === 'done') {
-      box.insertAdjacentHTML('beforeend', `<section class="panel row between" style="margin-top:12px">
-        <span><b>Transcripción lista.</b><span class="small muted" style="display:block">Tu texto quedó guardado en este dispositivo.</span></span>
-        <button class="btn primary" id="exportReady">Descargar Word o PDF</button>
-      </section>`);
-      $('#exportReady').onclick = () => setTab('ex');
-    }
     $('#go').onclick = start;
+    const syncEng = () => { const c = $('input[name=eng]:checked').value === 'cloud'; $('#cloudbox').hidden = !c; $('#localbox').hidden = c; };
+    $$('input[name=eng]').forEach(r => r.onchange = syncEng);
+    $('#prov').onchange = (e) => { const k = CLOUD[e.target.value].keyUrl; const l = $('#keylink'); l.href = k; l.textContent = k.replace('https://', ''); };
     $('#gl').onchange = (e) => lsSet('estrato.glossary', e.target.value);
     $('#usegl').onchange = (e) => lsSet('estrato.usegl', e.target.checked);
     if ($('#applygl')) {
@@ -800,28 +803,35 @@ async function viewDetail(id, autoTranscribe) {
 
   async function start() {
     if (running) return;
-    const key = ($('input[name=model]:checked') || {}).value || recommend(cap);
+    const engine = ($('input[name=eng]:checked') || {}).value || 'local';
+    const provider = $('#prov').value, apiKey = $('#akey').value.trim();
+    const dialect = $('#dial').value;
+    lsSet('estrato.cloud', { engine, provider, key: apiKey, dialect });
+    if (engine === 'cloud' && !apiKey) { toast('Pega primero tu clave de API (es gratis, el enlace está arriba).', 6000); $('#akey').focus(); return; }
+    const key = engine === 'cloud' ? 'cloud-' + provider : (($('input[name=model]:checked') || {}).value || recommend(cap));
     const tr = rec.transcript = rec.transcript || { state: 'none', done: 0, total: 0 };
     if (rec.segments.length && tr.state === 'done') {
       if (!(await confirmBox('Al volver a transcribir se pierden las ediciones que hayas hecho al texto. ¿Continuar?', 'Volver a transcribir', true))) return;
     }
     if (tr.state === 'done' || tr.model !== key) { if (tr.state !== 'partial' || tr.model !== key) { rec.segments = []; tr.done = 0; tr.state = 'none'; } }
-    const terms = $('#usegl').checked ? parseTerms($('#gl').value) : null;
+    const userTerms = parseTerms($('#gl').value);
+    const terms = $('#usegl').checked ? (dialect === 'cl' ? [...userTerms, ...CHILE_TERMS] : userTerms) : null;
     lsSet('estrato.glossary', $('#gl').value);
     running = true; stopFlag = false;
     $('#go').disabled = true; $('#run').hidden = false; $('#stop').disabled = false;
     const runtxt = $('#runtxt'), bar = $('#runbar'), last = $('#runlast');
     keepAwake(true);
-    S.client = S.client || new WhisperClient();
+    let failHtml = '';
+    const client = engine === 'cloud' ? new CloudClient({ provider, key: apiKey, dialect, terms: [...userTerms.filter(t => !DEFAULT_SET.has(t.toLowerCase())), ...(dialect === 'cl' ? CHILE_TERMS : []), ...userTerms] }) : (S.client = S.client || new WhisperClient());
     try {
-      runtxt.textContent = 'Preparando el modelo…';
-      await S.client.load(key, cap, (p) => {
+      runtxt.textContent = engine === 'cloud' ? 'Conectando con el servicio de transcripción…' : 'Preparando el modelo…';
+      await client.load(key, cap, (p) => {
         if (p.total) { bar.style.width = Math.round(p.loaded / p.total * 100) + '%'; runtxt.textContent = `Descargando el modelo: ${mb(p.loaded)} de ${mb(p.total)} MB (solo la primera vez)`; }
       }, (n) => toast(n, 7000));
       bar.style.width = '0';
       let sinceRender = 0;
       await transcribe(rec, {
-        client: S.client, modelKey: key, cap, glossary: terms,
+        client, modelKey: key, cap, glossary: terms,
         shouldStop: () => stopFlag,
         onStatus: (s) => {
           if (s.phase === 'analyze') { runtxt.textContent = `Detectando dónde hay voz… ${Math.round(s.pct * 100)}%`; bar.style.width = Math.round(s.pct * 100) + '%'; }
@@ -838,13 +848,13 @@ async function viewDetail(id, autoTranscribe) {
     } catch (e) {
       console.error(e);
       const m = String(e.message || e);
-      const adv = /memory|alloc|OOM|out of/i.test(m) ? 'Falta memoria en este dispositivo: prueba con el modo Equilibrado o Rápido.'
+      const adv = engine === 'cloud' ? '' : /memory|alloc|OOM|out of/i.test(m) ? 'Falta memoria en este dispositivo: prueba con el modo Equilibrado o Rápido.'
         : /fetch|network|load failed|Failed to|404|403/i.test(m) ? 'No se pudo descargar el modelo. Revisa tu conexión a internet (solo se necesita la primera vez) y vuelve a intentar.'
         : 'Prueba con otro modelo o recarga la página; lo ya transcrito está guardado.';
-      $('#run').insertAdjacentHTML('beforeend', `<div class="alert bad"><b>No se pudo transcribir.</b> ${adv}<br><span class="small">${esc(m)}</span></div>`);
+      failHtml = `<div class="alert bad"><b>No se pudo transcribir.</b> ${adv}<br><span class="small">${esc(m)}</span></div>`;
     } finally {
       running = false; keepAwake(false);
-      if (tab === 'tx') { renderTPanel(); $('#tsearch').hidden = rec.segments.length === 0; renderTranscript(); }
+      if (tab === 'tx') { renderTPanel(); $('#tsearch').hidden = rec.segments.length === 0; renderTranscript(); if (failHtml) { $('#tpanel').insertAdjacentHTML('afterbegin', failHtml); $('#tpanel').scrollIntoView({ block: 'start' }); } }
     }
   }
   disposers.push(() => { stopFlag = true; });

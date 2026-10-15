@@ -1,5 +1,5 @@
 // Service worker: deja la app disponible sin conexión. Los modelos de Whisper los guarda el propio motor (Cache API).
-const VERSION = 'estrato-v1';
+const VERSION = 'estrato-v2';
 const SHELL = ['./', 'index.html', 'css/styles.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',
   'js/app.js', 'js/db.js', 'js/recorder.js', 'js/vad.js', 'js/transcriber.js', 'js/whisper-worker.js', 'js/glossary.js',
   'js/attachments.js', 'js/search.js', 'js/export.js'];

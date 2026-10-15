@@ -1,7 +1,9 @@
 // Orquesta la transcripción: detecta voz, parte en ventanas y las envía a Whisper.
 import { saveRec } from './db.js';
 import { PCMReader, analyze, planWindows } from './vad.js';
-import { buildGlossary, applyGlossary, parseTerms } from './glossary.js';
+import { buildGlossary, applyGlossary, parseTerms, CHILE_SPEECH } from './glossary.js';
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 export const MODELS = {
   turbo: {
@@ -64,7 +66,8 @@ const JUNK = [
 export function cleanText(t) {
   t = (t || '').replace(/\s+/g, ' ').trim();
   if (!t) return '';
-  if (JUNK.some(r => r.test(t))) return '';
+  // frases típicas que Whisper inventa en silencios: solo se descartan si el tramo es corto (no una frase real de clase)
+  if (JUNK.some(r => r.test(t)) && (t.split(' ').length <= 8 || /^[\s♪\.\-–—…]+$|^[\[\(]/.test(t))) return '';
   // colapsa bucles repetidos (alucinaciones): una frase de 1–8 palabras repetida 4 o más veces
   const w = t.split(' ');
   for (let n = 1; n <= 8; n++) {
@@ -142,6 +145,80 @@ export class WhisperClient {
   }
 
   terminate() { if (this.w) { this.w.terminate(); this.w = null; } }
+}
+
+
+/* ---------- Transcripción en la nube (Whisper Large v3 por API) ---------- */
+export const CLOUD = {
+  groq: { label: 'Groq · Whisper Large v3 (gratis)', url: 'https://api.groq.com/openai/v1/audio/transcriptions', model: 'whisper-large-v3', keyUrl: 'https://console.groq.com/keys' },
+  openai: { label: 'OpenAI · Whisper', url: 'https://api.openai.com/v1/audio/transcriptions', model: 'whisper-1', keyUrl: 'https://platform.openai.com/api-keys' },
+};
+
+export function encodeWav(f32, rate = 16000) {
+  const buf = new ArrayBuffer(44 + f32.length * 2), v = new DataView(buf);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + f32.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, f32.length * 2, true);
+  for (let i = 0; i < f32.length; i++) { const x = Math.max(-1, Math.min(1, f32[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+// Misma interfaz que WhisperClient (load/run), pero envía cada tramo de voz a la API.
+export class CloudClient {
+  constructor({ provider, key, terms, dialect }) {
+    this.dialect = dialect === 'es' ? 'es' : 'cl';
+    this.cfg = CLOUD[provider] || CLOUD.groq; this.key = (key || '').trim();
+    this.terms = (terms || []); this.tail = ''; this.last = 0; this.onNote = null;
+  }
+  async load(_k, _cap, _p, onNote) { this.onNote = onNote; if (!this.key) throw new Error('Falta la clave de API.'); }
+  _prompt() {
+    let list = '';
+    for (const t of this.terms) { if ((list + t).length > 250) break; list += (list ? ', ' : '') + t; }
+    const head = (this.dialect === 'cl' ? 'Clase de Geología en español de Chile, en Concepción. ' + CHILE_SPEECH : 'Clase de Geología en español.') + (list ? ' Términos: ' + list + '.' : '');
+    return (head + (this.tail ? ' ' + this.tail : '')).slice(-520);
+  }
+  async run(audio) {
+    const wav = encodeWav(audio);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const gap = 3300 - (Date.now() - this.last); // respeta ≈ 20 solicitudes por minuto
+      if (gap > 0) await sleep(gap);
+      const fd = new FormData();
+      fd.append('file', wav, 'tramo.wav'); fd.append('model', this.cfg.model); fd.append('language', 'es');
+      fd.append('response_format', 'verbose_json'); fd.append('temperature', '0'); fd.append('prompt', this._prompt());
+      let res;
+      const ac = new AbortController(); const to = setTimeout(() => ac.abort(), 120000);
+      try { this.last = Date.now(); res = await fetch(this.cfg.url, { method: 'POST', headers: { Authorization: 'Bearer ' + this.key }, body: fd, signal: ac.signal }); }
+      catch (e) { clearTimeout(to); if (attempt >= 3) throw new Error('No hay conexión con el servicio de transcripción. Revisa tu internet y pulsa «Continuar».'); await sleep(2500 * (attempt + 1)); continue; }
+      clearTimeout(to);
+      if (res.ok) {
+        const j = await res.json();
+        const chunks = [];
+        for (const sg of j.segments || []) {
+          if (sg.no_speech_prob > 0.6 && sg.avg_logprob < -0.8) continue;
+          if (sg.compression_ratio > 2.4) continue;
+          chunks.push({ text: sg.text, timestamp: [sg.start, sg.end] });
+        }
+        if (!j.segments) chunks.push({ text: j.text, timestamp: [0, audio.length / 16000] });
+        const text = chunks.map(c => c.text).join(' ');
+        if (text.trim()) this.tail = text.trim().slice(-180);
+        return { text, chunks };
+      }
+      if (res.status === 401 || res.status === 403) throw new Error('El proveedor rechazó la clave de API (' + res.status + '). Revísala y vuelve a intentar.');
+      if (res.status === 429) {
+        const ra = parseFloat(res.headers.get('retry-after')) || 20;
+        if (ra > 120) throw new Error(`Se alcanzó el límite gratuito de ${this.cfg.label}. Vuelve a pulsar «Continuar» en ${Math.ceil(ra / 60)} min; lo ya transcrito está guardado.`);
+        if (this.onNote) this.onNote(`Límite de velocidad del proveedor: esperando ${Math.ceil(ra)} s…`);
+        await sleep(ra * 1000 + 500); continue;
+      }
+      if (res.status >= 500) { await sleep(3000); continue; }
+      const body = await res.text().catch(() => '');
+      throw new Error(`El proveedor respondió con error ${res.status}. ${body.slice(0, 160)}`);
+    }
+    throw new Error('El servicio no respondió tras varios intentos. Pulsa «Continuar» más tarde.');
+  }
+  terminate() {}
 }
 
 function normalizeRMS(x) {
