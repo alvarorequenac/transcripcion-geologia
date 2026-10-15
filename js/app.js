@@ -748,22 +748,25 @@ async function viewDetail(id, autoTranscribe) {
     const pick = tr.model && MODELS[tr.model] && tr.state !== 'done' ? tr.model : rec_;
     const canTurbo = cap.webgpu && cap.f16;
     const gl = lsGet('estrato.glossary', DEFAULT_TERMS);
-    const cl = Object.assign({ engine: (cap.mobile || !canTurbo) ? 'cloud' : 'local', provider: 'groq', key: '', dialect: 'cl' }, lsGet('estrato.cloud', {}));
+    const cl = Object.assign({ engine: (cap.mobile || !canTurbo) ? 'cloud' : 'local', endpoint: CLOUD.groq.url, dialect: 'cl' }, lsGet('estrato.cloud', {}));
+    if (Object.prototype.hasOwnProperty.call(cl, 'key')) {
+      delete cl.key;
+      lsSet('estrato.cloud', cl);
+    }
     const optsHtml = Object.entries(MODELS).map(([k, m]) => {
       const dis = k === 'turbo' && !canTurbo;
       return `<label class="opt ${dis ? 'disabled' : ''}"><input type="radio" name="model" value="${k}" ${pick === k ? 'checked' : ''} ${dis ? 'disabled' : ''}><span><b>${m.label}${k === rec_ ? ' (recomendado)' : ''}</b><span class="small muted">${m.sub}${dis ? '. Requiere WebGPU con soporte de 16 bits (Chrome o Edge recientes en computador).' : ''}</span></span></label>`;
     }).join('');
     const inner = `
       <div class="stack" role="radiogroup" aria-label="Dónde transcribir">
-        <label class="opt"><input type="radio" name="eng" value="cloud" ${cl.engine === 'cloud' ? 'checked' : ''}><span><b>En la nube · Whisper Large v3 (recomendado)</b><span class="small muted">La opción más precisa y funciona rápido en cualquier celular. Necesita internet y una clave gratuita. El audio de la clase se envía al proveedor solo para transcribirlo.</span></span></label>
+        <label class="opt"><input type="radio" name="eng" value="cloud" ${cl.engine === 'cloud' ? 'checked' : ''}><span><b>En la nube · Whisper Large v3 (recomendado)</b><span class="small muted">La opción más precisa y funciona rápido en cualquier celular. Necesita internet. El audio se envía al backend seguro de Estrato y de ahí a Groq para transcribirlo; la clave de Groq permanece en el backend.</span></span></label>
         <label class="opt"><input type="radio" name="eng" value="local" ${cl.engine === 'local' ? 'checked' : ''}><span><b>En este dispositivo</b><span class="small muted">Privado y sin internet, pero menos preciso en celulares.</span></span></label>
       </div>
       <div id="cloudbox" class="stack" style="margin-top:12px" ${cl.engine === 'cloud' ? '' : 'hidden'}>
-        <div><label class="f" for="prov">Proveedor</label><select id="prov">${Object.entries(CLOUD).map(([k, c]) => `<option value="${k}" ${cl.provider === k ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>
+        <div><label class="f" for="endpoint">URL del backend seguro</label><input id="endpoint" type="url" inputmode="url" autocomplete="url" spellcheck="false" value="${esc(cl.endpoint)}" placeholder="https://estrato-transcribe.tu-cuenta.workers.dev/transcribe">
+          <p class="small muted" style="margin:6px 0 0">Configura la dirección de tu Worker de Cloudflare. No pegues aquí una clave de API.</p></div>
         <div><label class="f" for="dial">Variante del español</label><select id="dial"><option value="cl" ${cl.dialect !== 'es' ? 'selected' : ''}>Español de Chile (recomendado)</option><option value="es" ${cl.dialect === 'es' ? 'selected' : ''}>Español general</option></select>
           <p class="small muted" style="margin:6px 0 0">En la variante chilena se reconocen mejor las expresiones del habla chilena («po», «cachai», «al tiro») y los nombres de la geología de Chile.</p></div>
-        <div><label class="f" for="akey">Clave de API</label><input id="akey" type="password" autocomplete="off" spellcheck="false" value="${esc(cl.key)}" placeholder="Pega aquí tu clave">
-          <p class="small muted" style="margin:6px 0 0">Gratis en <a id="keylink" href="${CLOUD[cl.provider].keyUrl}" target="_blank" rel="noopener">${CLOUD[cl.provider].keyUrl.replace('https://', '')}</a> (crea una cuenta y pulsa «Create API key»). La clave queda guardada solo en este dispositivo.</p></div>
       </div>
       <div id="localbox" style="margin-top:12px" ${cl.engine === 'local' ? '' : 'hidden'}>
       ${!cap.webgpu ? '<div class="alert">Este navegador no tiene WebGPU: transcribir funciona, pero será bastante más lento. Chrome o Edge recientes, en computador o Android, son la mejor opción.</div>' : ''}
@@ -791,7 +794,6 @@ async function viewDetail(id, autoTranscribe) {
     $('#go').onclick = start;
     const syncEng = () => { const c = $('input[name=eng]:checked').value === 'cloud'; $('#cloudbox').hidden = !c; $('#localbox').hidden = c; };
     $$('input[name=eng]').forEach(r => r.onchange = syncEng);
-    $('#prov').onchange = (e) => { const k = CLOUD[e.target.value].keyUrl; const l = $('#keylink'); l.href = k; l.textContent = k.replace('https://', ''); };
     $('#gl').onchange = (e) => lsSet('estrato.glossary', e.target.value);
     $('#usegl').onchange = (e) => lsSet('estrato.usegl', e.target.checked);
     if ($('#applygl')) {
@@ -804,11 +806,10 @@ async function viewDetail(id, autoTranscribe) {
   async function start() {
     if (running) return;
     const engine = ($('input[name=eng]:checked') || {}).value || 'local';
-    const provider = $('#prov').value, apiKey = $('#akey').value.trim();
+    const endpoint = $('#endpoint').value.trim();
     const dialect = $('#dial').value;
-    lsSet('estrato.cloud', { engine, provider, key: apiKey, dialect });
-    if (engine === 'cloud' && !apiKey) { toast('Pega primero tu clave de API (es gratis, el enlace está arriba).', 6000); $('#akey').focus(); return; }
-    const key = engine === 'cloud' ? 'cloud-' + provider : (($('input[name=model]:checked') || {}).value || recommend(cap));
+    lsSet('estrato.cloud', { engine, endpoint, dialect });
+    const key = engine === 'cloud' ? 'cloud-groq' : (($('input[name=model]:checked') || {}).value || recommend(cap));
     const tr = rec.transcript = rec.transcript || { state: 'none', done: 0, total: 0 };
     if (rec.segments.length && tr.state === 'done') {
       if (!(await confirmBox('Al volver a transcribir se pierden las ediciones que hayas hecho al texto. ¿Continuar?', 'Volver a transcribir', true))) return;
@@ -822,7 +823,7 @@ async function viewDetail(id, autoTranscribe) {
     const runtxt = $('#runtxt'), bar = $('#runbar'), last = $('#runlast');
     keepAwake(true);
     let failHtml = '';
-    const client = engine === 'cloud' ? new CloudClient({ provider, key: apiKey, dialect, terms: [...userTerms.filter(t => !DEFAULT_SET.has(t.toLowerCase())), ...(dialect === 'cl' ? CHILE_TERMS : []), ...userTerms] }) : (S.client = S.client || new WhisperClient());
+    const client = engine === 'cloud' ? new CloudClient({ endpoint, dialect, terms: [...userTerms.filter(t => !DEFAULT_SET.has(t.toLowerCase())), ...(dialect === 'cl' ? CHILE_TERMS : []), ...userTerms] }) : (S.client = S.client || new WhisperClient());
     try {
       runtxt.textContent = engine === 'cloud' ? 'Conectando con el servicio de transcripción…' : 'Preparando el modelo…';
       await client.load(key, cap, (p) => {

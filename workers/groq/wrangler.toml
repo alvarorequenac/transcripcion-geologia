@@ -1,0 +1,12 @@
+name = "estrato-transcribe"
+main = "index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[[ratelimits]]
+name = "TRANSCRIPTION_LIMITER"
+namespace_id = "41820615"
+
+  [ratelimits.simple]
+  limit = 18
+  period = 60
