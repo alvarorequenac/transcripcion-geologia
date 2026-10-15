@@ -118,6 +118,14 @@ async function viewRecord() {
 
   view.innerHTML = `
   <h1>Grabar una clase</h1>
+  <section class="panel" aria-label="Cómo grabar y descargar la transcripción">
+    <b>Del audio al documento</b>
+    <ol class="small muted" style="margin:8px 0 0;padding-left:22px">
+      <li>Pulsa el botón rojo para grabar; al terminar, púlsalo otra vez y elige «Detener y guardar».</li>
+      <li>En la clase guardada, pulsa «Transcribir en español». La transcripción se guarda automáticamente en este dispositivo.</li>
+      <li>Cuando termine, pulsa «Descargar Word o PDF» y elige el formato.</li>
+    </ol>
+  </section>
   ${hasMic ? '' : '<div class="alert bad">Este navegador no permite grabar audio. Prueba con Chrome, Edge, Firefox o Safari actualizados, abriendo la página con https.</div>'}
   <div id="alerts"></div>
   <section class="panel stack" aria-label="Grabadora">
@@ -773,6 +781,13 @@ async function viewDetail(id, autoTranscribe) {
     box.innerHTML = has && tr.state === 'done'
       ? `<details class="panel"><summary>Volver a transcribir o ajustar el glosario</summary>${inner}</details>`
       : `<section class="panel"><h2>${has ? 'Transcripción incompleta' : 'Transcribir esta clase'}</h2>${inner}</section>`;
+    if (has && tr.state === 'done') {
+      box.insertAdjacentHTML('beforeend', `<section class="panel row between" style="margin-top:12px">
+        <span><b>Transcripción lista.</b><span class="small muted" style="display:block">Tu texto quedó guardado en este dispositivo.</span></span>
+        <button class="btn primary" id="exportReady">Descargar Word o PDF</button>
+      </section>`);
+      $('#exportReady').onclick = () => setTab('ex');
+    }
     $('#go').onclick = start;
     $('#gl').onchange = (e) => lsSet('estrato.glossary', e.target.value);
     $('#usegl').onchange = (e) => lsSet('estrato.usegl', e.target.checked);
