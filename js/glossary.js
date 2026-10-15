@@ -72,3 +72,15 @@ export function applyGlossary(text, gl) {
   for (let r = reps.length - 1; r >= 0; r--) out = out.slice(0, reps[r].a) + reps[r].rep + out.slice(reps[r].b);
   return { text: out, changed };
 }
+
+
+// Vocabulario de Geología de Chile y del habla chilena: sesga a Whisper hacia la ortografía correcta.
+export const CHILE_TERMS = [
+  'Cordillera de Nahuelbuta', 'Cuenca de Arauco', 'Batolito Costero', 'Zona de Falla Liquiñe-Ofqui', 'Bahía de Concepción',
+  'Lota', 'Coronel', 'Penco', 'Tomé', 'Santa Juana', 'Biobío', 'Ñuble', 'Atacama', 'Antofagasta', 'Copiapó', 'Altiplano',
+  'Precordillera', 'Depresión Intermedia', 'Zona Volcánica Sur', 'Zona Volcánica Central', 'volcán Villarrica', 'Llaima',
+  'Antuco', 'Chaitén', 'Calbuco', 'Nevados de Chillán', 'Laguna del Maule', 'placa de Nazca', 'placa Sudamericana',
+  'fosa Chile-Perú', 'Dorsal de Chile', 'terremoto de Valdivia', 'pórfido cuprífero', 'Chuquicamata', 'El Teniente',
+  'Escondida', 'Sernageomin', 'Universidad de Concepción', 'UdeC',
+];
+export const CHILE_SPEECH = 'Habla coloquial chilena: "po", "cachai", "al tiro", "ya", "bacán", "fome".';
